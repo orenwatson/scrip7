@@ -1,5 +1,9 @@
 #define true
 true /*
+if [ $1 = 'simple' ]
+then
+cc $0 -Wall -Wextra -lm -fwrapv -o scrip7
+else
 echo "Compiling binaries and extracting doc and test..."
 cc $0 -Wall -Wextra -lm -fwrapv -o scrip7 2>err
 cc -DNOS7MAIN $0 -c -lm -fwrapv -o scrip7.o 2>>err
@@ -114,6 +118,7 @@ else
 echo "Failure"
 fi
 rm out
+fi
 exit 0
 true */
 //BEGINHEADER
