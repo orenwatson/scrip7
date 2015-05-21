@@ -1,9 +1,10 @@
 #define true
 true /*
 echo "Compiling binaries and extracting doc and test..."
-cc $0 -Wall -Wextra -lm -fwrapv -o scrip7
-cc -DNOS7MAIN $0 -c -lm -fwrapv -o scrip7.o
-grep -A14 'B[E]GINHEADER' $0 >scrip7.h
+cc $0 -Wall -Wextra -lm -fwrapv -o scrip7 2>err
+cc -DNOS7MAIN $0 -c -lm -fwrapv -o scrip7.o 2>>err
+head err
+sed -n '/B[E]GINHEADER/,/E[N]DHEADER/p' $0 >scrip7.h
 cat >docs.txt <<END
 Author: Oren Watson
 Scrip7 hopefully getting stabler release 2015-05-12
@@ -13,18 +14,9 @@ the library scrip7.o, the documentation docs.txt.
 To include, include this file. If your platform does not support weak symbols, 
 you will also need to define NOS7MAIN when including it.
 Changes in this new version:
-Ide removed for now, it sucked. Try rlwrap scrip7 instead.
-g and h are now relatively normal registers, with VARIANT type adjusting
-between double, int64, and pointer depending on the other operand. Their
-use as code pointers was a dumb idea.
-Instead we have K (label) and G (goto) instructions. K saves the current
-place to a register. G goes to the place in a register.
-Able to call C functions with simple signatures, using the C (call)
-instruction. Changed W and R to allow access to other streams, and use
-N register, the way S and L instructions do.
-Changed p, r, x, ,, ., to allow other streams, while retaining default
-streams when using _ register.
-Added O instruction to open a file.
+Added a variable system to make things easier. the $ set instruction and
+@ get instruction are used with string src as varaible name,
+and dest as value. e.g. a='a a$3"foo a='f _.a a@3"foo _.a prints fa.
 
 Language Description:
 A scrip7 program or script consists of statements, jumps, and loop brackets.
@@ -51,6 +43,8 @@ int8 int16 int32 int64 float double pointer addr
                    h           h      h      H
 A special register called _ is supported for the first register in a statement.
 It is zero when read, and does nothing when written to.
+g and h are relatively normal registers, with VARIANT type adjusting
+between double, int64, and pointer depending on the other operand.
 The offsets are added to the address of the accessed data. An offset of
 the form (1234 counts by bytes. An offset of the form )1234 counts by
 the size of the addressed data type.
@@ -124,6 +118,7 @@ exit 0
 true */
 //BEGINHEADER
 #include "stdio.h"
+#include "stdint.h"
 extern int s7logflag,s7freeflag,s7errflag,s7memsafe;
 /*Declarations for non-static*/
 void scrip7(char *code);
@@ -134,23 +129,23 @@ int scrip7rc(FILE *code);
 /*execute a program, ending with .\n, returns 0 if the program was empty.*/
 void scrip7cli(FILE *code);
 /*execute a set of programs, ending with an empty program.*/
-void scrip7mem(char *data,int size);
-/*provide your own env instead of default one*/
-//ENDHEADER
-
-struct scrip7state{
+struct va7 {int64_t c;double x;char *p;};
+extern struct scrip7state{
 	char *v[8];
 	char *data;
-	char *stack;
+	struct scrip7var *vars;
 }globa7;
-
+void se7var(char *name,struct va7 val);
+struct va7 ge7var(char *name);
+//ENDHEADER
+char scrap[1000];
+struct scrip7state globa7 = {{0,0,0,0,0,0,0,0},scrap,0};
 int s7logflag=0;
 int s7freeflag=0;
 int s7errflag=1;
 
 #include "stdlib.h"
 #include "string.h"
-#include "stdint.h"
 #include "math.h"
 #include "inttypes.h"
 #include "stddef.h"
@@ -165,7 +160,27 @@ int s7errflag=1;
 #define let(x,y) typeof(y) x = y
 #define new(T,y...) ({T *$$tmp=malloc(sizeof(T)); *$$tmp=(T){y}; $$tmp;})
 
-struct va7 {int64_t c;double x;char *p;};
+sut scrip7var{sut scrip7var*tbl[32];sut va7 val;};
+
+void se7var(char *n,sut va7 val){
+	sut scrip7var**q=&(globa7.vars);
+	loop{
+		if(!*q)*q=new(sut scrip7var,{0},{0,0,0});
+		if(!*n){(*q)->val=val;return;}
+		q=(*q)->tbl+*n%32;
+		n++;
+	}
+}
+
+sut va7 ge7var(char *n){
+	sut scrip7var**q=&(globa7.vars);
+	loop{
+		if(!*q)*q=new(sut scrip7var,{0},{0,0,0});
+		if(!*n){return (*q)->val;}
+		q=(*q)->tbl+*n%32;
+		n++;
+	}
+}
 
 static char *s7getcmd(FILE *f){
 	int n=80,l=0;
@@ -378,7 +393,7 @@ static int64_t parsedec(char **gp){
 static void parsenum(char **gp,int *stp,struct va7 *sp){
 	int64_t i=0,j;
 	double x;
-	char *p=0;
+	static char *p=0;
 	int sgn=1;
 	char *g=*gp;
 	if(*g>='0'&&*g<='9'){
@@ -427,7 +442,7 @@ static void parsenum(char **gp,int *stp,struct va7 *sp){
 		i=j;
 		x=i;
 	}ei(*g=='"'){
-		p=(char*)malloc(i+1);
+		p=(char*)realloc(p,i+1);
 		p[i]=0;
 		for(j=0;j<i;j++){
 			p[j]=*++g;
@@ -722,12 +737,19 @@ void scrip7(char *code){
 		brase 'K': //save current place into dest
 			if(dt==TY_PTR||dt==TY_ADDR)dv.p=g;
 			else Die("Can only save label to a pointer.");
+		brase '@': //get variable of name src into dest
+			if(st==TY_ADDR)dv=ge7var(sv.p);
+			else Die("Variable name must be string");
+			setva7(dt,dp,dx,&dv);
+		brase '$': //set variable of name src from dest
+			if(st==TY_ADDR)se7var(sv.p,dv);
+			else Die("Variable name must be string");
 		brase 'G': //goto place saved in src
 			if(st==TY_PTR||st==TY_ADDR)g=sv.p;
 			else Die("Can only jump to a pointer.");
-		brase 'C': //call dest as a void(*)(char**) with src as parameter.
-			un(dt==TY_PTR||dt==TY_ADDR)Die("Cam only call a pointer.");
-			((void(*)(char**))dv.p)(sp);
+		brase 'C': //call dest as a void(*)(char*) with src as parameter.
+			un(dt==TY_PTR||dt==TY_ADDR)Die("Can only call a pointer.");
+			((void(*)(char*))dv.p)(sv.p);
 		brault: Die("Bad Operator");
 		}
 		if(skip){
@@ -759,7 +781,6 @@ void scrip7cli(FILE *in){
 
 #if !defined(NOS7MAIN)
 __attribute__((weak)) int main(int argc,char **argv){
-	globa7.data=malloc(1000);
 	int i=argc,cli=1;
 	wh(i>1){
 		i--;
